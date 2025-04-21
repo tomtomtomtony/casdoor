@@ -40,14 +40,14 @@ $env:GOOS = "linux"
 $env:GOARCH = "amd64"
 go build -ldflags="-w -s" -o ./release/casdoor-Linux
 
-# $env:CGO_ENABLED = "0"
-# $env:GOOS = "windows"
-# $env:GOARCH = "amd64"
-# go build -ldflags="-w -s" -o ./release/casdoor-WIN.exe
+$env:CGO_ENABLED = "0"
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+go build -ldflags="-w -s" -o ./release/casdoor-WIN.exe
 
 
-cd release
-
-tar -czvf "casdoor.tar.gz" .
+# cd release
+#
+# tar -czvf "casdoor.tar.gz" .
 
 
