@@ -1,48 +1,40 @@
-# 前端构建阶段（明确Node.js版本）
-FROM 192.168.110.2:8066/node:18.19.0-alpine AS FRONT
+FROM --platform=$BUILDPLATFORM node:18.19.0 AS FRONT
 WORKDIR /web
 COPY ./web .
-RUN yarn install --frozen-lockfile --network-timeout 1000000 \
-    && NODE_OPTIONS="--max-old-space-size=4096" yarn run build \
-    && yarn cache clean
+RUN yarn install --frozen-lockfile --network-timeout 1000000 && NODE_OPTIONS="--max-old-space-size=4096" yarn run build
 
-# 后端构建阶段（明确Golang版本）
-FROM 192.168.110.2:8066/golang:1.21.13-alpine AS BACK
+
+FROM --platform=$BUILDPLATFORM golang:1.21.13 AS BACK
 WORKDIR /go/src/casdoor
 COPY . .
-RUN apk add --no-cache git \
-    && ./build.sh \
-    && go test -v -run TestGetVersionInfo ./util/system_test.go ./util/system.go > version_info.txt
+RUN ./build.sh
+RUN go test -v -run TestGetVersionInfo ./util/system_test.go ./util/system.go > version_info.txt
 
-# 最终镜像（明确Alpine版本）
-FROM 192.168.110.2:8066/alpine:3.19 AS STANDARD
+FROM alpine:latest AS STANDARD
 LABEL MAINTAINER="https://casdoor.org/"
 ARG USER=casdoor
 ARG TARGETOS
 ARG TARGETARCH
 ENV BUILDX_ARCH="${TARGETOS:-linux}_${TARGETARCH:-amd64}"
 
-# 合并安装命令并清理缓存
-RUN sed -i 's/https/http/' /etc/apk/repositories \
-    && apk add --no-cache sudo tzdata curl ca-certificates \
-    && update-ca-certificates \
-    && rm -rf /var/cache/apk/*
+RUN sed -i 's/https/http/' /etc/apk/repositories
+RUN apk add --update sudo
+RUN apk add tzdata
+RUN apk add curl
+RUN apk add ca-certificates && update-ca-certificates
 
-# 用户权限设置
 RUN adduser -D $USER -u 1000 \
     && echo "$USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USER \
     && chmod 0440 /etc/sudoers.d/$USER \
-    && mkdir -p /logs \
-    && chown -R $USER:$USER /logs
+    && mkdir logs \
+    && chown -R $USER:$USER logs
 
-USER $USER
+USER 1000
 WORKDIR /
-
-# 从构建阶段复制必要文件
 COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/server_${BUILDX_ARCH} ./server
 COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/swagger ./swagger
 COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/conf/app.conf ./conf/app.conf
-COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/version_info.txt ./version_info.txt
+COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/version_info.txt ./go/src/casdoor/version_info.txt
 COPY --from=FRONT --chown=$USER:$USER /web/build ./web/build
 
 ENTRYPOINT ["/server"]
