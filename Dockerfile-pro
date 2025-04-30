@@ -1,41 +1,48 @@
-FROM --platform=$BUILDPLATFORM 192.168.110.2:8066/node:18.19.0-alpine AS FRONT
+# 前端构建阶段（明确Node.js版本）
+FROM 192.168.110.2:8066/node:18.19.0-alpine AS FRONT
 WORKDIR /web
-COPY ./web/package.json ./web/yarn.lock ./
-RUN yarn install --frozen-lockfile --network-timeout 1000000 --production && \
-    yarn cache clean
 COPY ./web .
-RUN NODE_OPTIONS="--max-old-space-size=4096" yarn run build
+RUN yarn install --frozen-lockfile --network-timeout 1000000 \
+    && NODE_OPTIONS="--max-old-space-size=4096" yarn run build \
+    && yarn cache clean
 
-FROM --platform=$BUILDPLATFORM 192.168.110.2:8066/golang:1.21.13-alpine AS BACK
+# 后端构建阶段（明确Golang版本）
+FROM 192.168.110.2:8066/golang:1.21.13-alpine AS BACK
 WORKDIR /go/src/casdoor
-COPY go.mod go.sum ./
-RUN go mod download  # 分离依赖下载与构建
 COPY . .
-RUN CGO_ENABLED=0 ./build.sh && \
-    go test -v -run TestGetVersionInfo ./util/system_test.go ./util/system.go > version_info.txt
+RUN apk add --no-cache git \
+    && ./build.sh \
+    && go test -v -run TestGetVersionInfo ./util/system_test.go ./util/system.go > version_info.txt
 
+# 最终镜像（明确Alpine版本）
 FROM 192.168.110.2:8066/alpine:3.19 AS STANDARD
-ENV USER=casdoor
+LABEL MAINTAINER="https://casdoor.org/"
+ARG USER=casdoor
+ARG TARGETOS
+ARG TARGETARCH
+ENV BUILDX_ARCH="${TARGETOS:-linux}_${TARGETARCH:-amd64}"
 
-RUN sed -i 's/https/http/' /etc/apk/repositories && \
-    apk add --no-cache sudo tzdata curl ca-certificates && \
-    update-ca-certificates && \
-    rm -rf /var/cache/apk/*
+# 合并安装命令并清理缓存
+RUN sed -i 's/https/http/' /etc/apk/repositories \
+    && apk add --no-cache sudo tzdata curl ca-certificates \
+    && update-ca-certificates \
+    && rm -rf /var/cache/apk/*
 
-RUN adduser -D $USER -u 1000 && \
-    echo "$USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USER && \
-    chmod 0440 /etc/sudoers.d/$USER && \
-    mkdir -p /logs && chown -R $USER:$USER /logs
+# 用户权限设置
+RUN adduser -D $USER -u 1000 \
+    && echo "$USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USER \
+    && chmod 0440 /etc/sudoers.d/$USER \
+    && mkdir -p /logs \
+    && chown -R $USER:$USER /logs
 
 USER $USER
-
 WORKDIR /
-COPY --from=BACK /go/src/casdoor/server_${BUILDX_ARCH} ./server
-COPY --from=BACK /go/src/casdoor/swagger ./swagger
-COPY --from=BACK /go/src/casdoor/docker-entrypoint.sh /docker-entrypoint.sh
-COPY --from=BACK /go/src/casdoor/conf/app.conf ./conf/app.conf
-COPY --from=BACK /go/src/casdoor/version_info.txt ./go/src/casdoor/version_info.txt
-COPY --from=FRONT /web/build ./web/build
 
-ENTRYPOINT ["/bin/bash"]
-CMD ["/docker-entrypoint.sh"]
+# 从构建阶段复制必要文件
+COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/server_${BUILDX_ARCH} ./server
+COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/swagger ./swagger
+COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/conf/app.conf ./conf/app.conf
+COPY --from=BACK --chown=$USER:$USER /go/src/casdoor/version_info.txt ./version_info.txt
+COPY --from=FRONT --chown=$USER:$USER /web/build ./web/build
+
+ENTRYPOINT ["/server"]
